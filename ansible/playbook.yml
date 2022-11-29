@@ -1,0 +1,203 @@
+---
+- hosts: webserver
+
+  vars_files:
+    - ./vars/provision_vault.yml
+    - ./vars/provision_vars.yml
+    - ./vars/vars.yml
+
+  pre_tasks:
+    - name: Update APT package manager repositories cache
+      become: true
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install aptitude
+      become: true
+      apt:
+        name: aptitude
+        state: latest
+
+    - name: Create project directory
+      become: true
+      file:
+        path: '{{ project_deploy_dir }}'
+        state: directory
+        owner: '{{ ansible_user }}'
+        group: '{{ ansible_user }}'
+        mode: 0775
+
+  roles:
+    - nginx
+    - role: DavidWittman.redis
+      become: true
+
+  tasks:
+    - ping: ~
+
+    - name: Install cowsay - it's probably important
+      become: true
+      apt:
+        name: cowsay
+
+    - name: Install low-level utilities
+      become: true
+      apt:
+        name: "{{ item }}"
+      with_items:
+        - zip
+        - unzip
+
+    - name: Install Git VCS
+      become: true
+      apt:
+        name: git
+        state: latest
+
+    - name: Install MySQL DB server
+      become: true
+      apt:
+        name: mysql-server
+        state: latest
+
+    - name: Add PHP 7 PPA repository
+      become: true
+      apt_repository:
+        repo: 'ppa:ondrej/php'
+
+    - name: Install PHP packages
+      become: true
+      apt:
+        name: "{{ item }}"
+        state: latest
+      with_items:
+        - php7.1-cli
+        - php7.1-curl
+        - php7.1-fpm
+        - php7.1-intl
+        - php7.1-mysql
+        - php7.1-opcache
+        - php7.1-xml
+        - php-apcu
+      notify: Restart PHP-FPM
+
+    - name: Set date.timezone for CLI
+      become: true
+      ini_file:
+        path: /etc/php/7.1/cli/php.ini
+        section: Date
+        option: date.timezone
+        value: UTC
+
+    - name: Set date.timezone for FPM
+      become: true
+      ini_file:
+        path: /etc/php/7.1/fpm/php.ini
+        section: Date
+        option: date.timezone
+        value: UTC
+      notify: Restart PHP-FPM
+
+    - name: Increase OPcache limit of accelerated files
+      become: true
+      ini_file:
+        path: /etc/php/7.1/fpm/php.ini
+        section: opcache
+        option: opcache.max_accelerated_files
+        value: 20000
+      notify: Restart PHP-FPM
+
+    - name: Configure the PHP realpath cache
+      become: true
+      ini_file:
+        path: /etc/php/7.1/fpm/php.ini
+        section: PHP
+        option: '{{ item.option }}'
+        value: '{{ item.value }}'
+      notify: Restart PHP-FPM
+      with_items:
+        - { option: 'realpath_cache_size', value: '4096K' }
+        - { option: 'realpath_cache_ttl', value: '600' }
+
+    - name: Check for Composer
+      stat:
+        path: /usr/local/bin/composer
+      register: composer_stat
+
+    - name: Download Composer
+      script: scripts/install_composer.sh
+      when: not composer_stat.stat.exists
+
+    - name: Move Composer globally
+      become: true
+      command: mv composer.phar /usr/local/bin/composer
+      when: not composer_stat.stat.exists
+
+    - name: Set permissions on Composer
+      become: true
+      file:
+        path: /usr/local/bin/composer
+        mode: "a+x"
+
+    - name: Make sure Composer is at its latest version
+      composer:
+        working_dir: "/home/{{ ansible_user }}"
+        command: self-update
+      register: composer_self_update
+      changed_when: "not composer_self_update.stdout|search('You are already using composer version')"
+
+    - name: Set GitHub OAuth token for Composer
+      composer:
+        command: config
+        arguments: '-g github-oauth.github.com "{{ github_oauth_token }}"'
+        working_dir: "/home/{{ ansible_user }}"
+      tags:
+        - github_oauth
+
+    # Node
+    - name: Register NodeJS distribution
+      shell: 'curl -sL https://deb.nodesource.com/setup_8.x | sudo -E bash -'
+      changed_when: false
+
+    - name: Install NodeJS
+      become: true
+      apt:
+        name: nodejs
+        state: latest
+        update_cache: yes
+
+    # Yarn
+    - name: Add Yarn APT key
+      become: true
+      apt_key:
+        url: 'https://dl.yarnpkg.com/debian/pubkey.gpg'
+        state: present
+
+    - name: Add Yarn to the source lists
+      become: true
+      lineinfile:
+        path: '/etc/apt/sources.list.d/yarn.list'
+        regexp: 'deb https://dl.yarnpkg.com/debian/ stable main'
+        line: 'deb https://dl.yarnpkg.com/debian/ stable main'
+        create: yes
+
+    - name: Install Yarn package manager
+      become: true
+      apt:
+        name: yarn
+        state: latest
+        update_cache: yes
+
+  post_tasks:
+    - name: Upgrade installed packages
+      become: true
+      apt:
+        upgrade: safe
+
+  handlers:
+    - name: Restart PHP-FPM
+      become: true
+      service:
+        name: php7.1-fpm
+        state: restarted

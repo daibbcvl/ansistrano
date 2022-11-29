@@ -1,0 +1,12 @@
+---
+- hosts: do
+
+
+
+  vars:
+    ansistrano_deploy_to: "/var/www/project"
+
+
+
+  roles:
+    - ansistrano.deploy
